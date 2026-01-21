@@ -16,6 +16,7 @@ return [
 
     'modules' => [
         Aporat\ServerInfo\Modules\PhpModule::class,
+        Aporat\ServerInfo\Modules\LaravelModule::class,
     ],
 
 ];
