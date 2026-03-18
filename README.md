@@ -17,8 +17,8 @@ A Laravel package for reporting server and environment information such as PHP v
 
 ## Requirements
 
-- PHP 8.2, 8.3, or 8.4
-- Laravel 10.x, 11.x, or 12.x
+- PHP 8.4 or 8.5
+- Laravel 12.x or 13.x
 
 ## Installation
 
