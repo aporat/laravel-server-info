@@ -1,6 +1,6 @@
 {
     "name": "aporat/laravel-server-info",
-    "description": "Laravel package for reporting server and environment status like PHP, Redis, MySQL versions, and more",
+    "description": "Laravel package for reporting server and environment status: PHP, Laravel, system, disk, drivers, database and Redis versions, and more",
     "type": "library",
     "license": "MIT",
     "homepage": "https://github.com/aporat/laravel-server-info",
@@ -30,6 +30,12 @@
         "phpunit/phpunit": "^12.0",
         "mockery/mockery": "^1.6"
     },
+    "suggest": {
+        "illuminate/database": "Required by DatabaseModule (included in laravel/framework)",
+        "illuminate/redis": "Required by RedisModule (included in laravel/framework)",
+        "ext-redis": "Lets RedisModule probe Redis with the phpredis client",
+        "predis/predis": "Lets RedisModule probe Redis with the predis client"
+    },
     "autoload": {
         "psr-4": {
             "Aporat\\ServerInfo\\": "src/"
@@ -52,7 +58,10 @@
         "laravel": {
             "providers": [
                 "Aporat\\ServerInfo\\ServerInfoServiceProvider"
-            ]
+            ],
+            "aliases": {
+                "ServerInfo": "Aporat\\ServerInfo\\Facades\\ServerInfo"
+            }
         }
     },
     "scripts": {

@@ -4,16 +4,15 @@
 [![Latest Stable Version](https://poser.pugx.org/aporat/laravel-server-info/v/stable)](https://packagist.org/packages/aporat/laravel-server-info)
 [![License](https://poser.pugx.org/aporat/laravel-server-info/license)](https://packagist.org/packages/aporat/laravel-server-info)
 
-A Laravel package for reporting server and environment information such as PHP version, Laravel version, loaded extensions, and more. Perfect for debugging, monitoring, and diagnostics in Laravel applications.
+A Laravel package that reports server and environment information (PHP runtime, Laravel application, operating system, disk usage, service drivers, database and Redis server versions, and installed packages) with one Artisan command. Useful for debugging, support tickets and deployment checks.
 
 ## Features
 
-- Display PHP version, SAPI, OS, and loaded extensions
-- Display Laravel version, environment, debug mode, and configuration
-- Extensible module system for custom information gathering
-- Artisan command for easy access to server information
-- Filter output by specific modules
-- Support for custom modules via configuration
+- `php artisan server:info` with an `about`-style view, a flat `module.key value` view, and JSON output
+- Eight built-in modules, all cheap to run and safe to print: no passwords, credentials, DSNs or environment values
+- One failing module never hides the others; the command reports it and exits non-zero
+- Modules are plain classes resolved through the container, so `config:cache` always works
+- Add modules from config, from a service provider (`ServerInfo::extend()`), or with a container tag
 
 ## Requirements
 
@@ -22,270 +21,293 @@ A Laravel package for reporting server and environment information such as PHP v
 
 ## Installation
 
-Install the package via Composer:
-
 ```bash
 composer require aporat/laravel-server-info
 ```
 
-The package will automatically register its service provider.
+The service provider and the `ServerInfo` facade are registered automatically.
 
-### Publish Configuration (Optional)
-
-If you want to customize the registered modules, publish the configuration file:
+To change the module list or module options, publish the config file:
 
 ```bash
 php artisan vendor:publish --provider="Aporat\ServerInfo\ServerInfoServiceProvider" --tag="config"
 ```
 
-This will create a `config/server-info.php` file where you can configure which modules to load.
-
 ## Usage
 
-### Display All Server Information
-
-Run the Artisan command to display all server information:
-
 ```bash
-php artisan server:info
+php artisan server:info              # every module, grouped by module
+php artisan server:info database     # one module
+php artisan server:info --flat       # one "module.key: value" line per value
+php artisan server:info --json       # nested JSON
+php artisan server:info --json --flat
 ```
 
-**Example output:**
+### Default view
+
+Each module is a section, like `php artisan about`. Values inside a group are labelled with their path in the module (`opcache.enabled`, `storage.free`):
+
 ```
-php.version: 8.4.0
-php.sapi: cli
-php.os: Linux
-php.extensions: ["Core","date","libxml","openssl","pcre",...]
-laravel.version: 12.0.0
-laravel.env: local
-laravel.debug: true
-laravel.name: Laravel
-laravel.timezone: UTC
-```
+  php ..............................................................................
+  version ................................................................... 8.4.26
+  sapi ......................................................................... cli
+  memory_limit ................................................................ 128M
+  max_execution_time ............................................................. 0
+  upload_max_filesize ........................................................... 2M
+  post_max_size ................................................................. 8M
+  timezone ..................................................................... UTC
+  opcache.enabled ............................................................. true
+  opcache.memory_used ...................................................... 9.4 MiB
+  opcache.memory_free .................................................... 118.6 MiB
+  opcache.jit ................................................................. true
+  extensions  Core, ctype, curl, date, dom, fileinfo, filter, hash, iconv, json, ...
 
-### Filter by Module
+  laravel ..........................................................................
+  version .................................................................. 13.34.0
+  env ................................................................... production
+  debug ...................................................................... false
+  ...
 
-You can filter the output to show information from a specific module:
-
-```bash
-php artisan server:info php
-```
-
-**Output:**
-```
-php.version: 8.4.0
-php.sapi: cli
-php.os: Linux
-php.extensions: ["Core","date","libxml","openssl","pcre",...]
-```
-
-Or filter to show only Laravel information:
-
-```bash
-php artisan server:info laravel
+  database .........................................................................
+  mysql.driver ............................................................... mysql
+  mysql.status .................................................................. ok
+  mysql.version ............................................................... 8.4.3
 ```
 
-**Output:**
+### Flat view (`--flat`)
+
+The v1 format: one line per value, keyed `module.key`. Groups are flattened with dots; lists are printed as JSON.
+
 ```
-laravel.version: 12.0.0
-laravel.env: local
-laravel.debug: true
-laravel.name: Laravel
-laravel.timezone: UTC
+php.version: 8.4.26
+php.opcache.enabled: true
+php.extensions: ["Core","ctype","curl",...]
+disk.storage.free: 106.0 GiB
+database.mysql.version: 8.4.3
 ```
 
-### Use in Code
+### JSON (`--json`)
 
-You can also access the registry programmatically:
+`--json` prints the nested report; `--json --flat` prints the flat keys as a JSON object. Values keep their types (`true`, `null`, numbers, lists).
+
+```json
+{
+    "php": {
+        "version": "8.4.26",
+        "opcache": { "enabled": true, "jit": true, "memory_used": "9.4 MiB", "memory_free": "118.6 MiB" }
+    },
+    "redis": { "client": "phpredis", "status": "not in use" }
+}
+```
+
+### Errors and exit codes
+
+Each module runs on its own. If a module's `info()` throws, the command prints the error in that module's place (an `Error` row, a `module.error` line, or `{"error": "..."}` in JSON), still prints every other module, and exits with status **1**. The error shows the exception class and message, so custom modules should not put secrets in exception messages.
+
+`server:info <module>` takes an exact module name. An unknown name prints the available modules and exits with status 1. Only the selected module is run.
+
+Problems with the module list itself (a class that does not exist or is not a module, a duplicate or invalid module name, a closure in the config) are configuration errors: they throw an `InvalidArgumentException` naming the entry.
+
+The built-in modules do not throw for unavailable services: an unreachable database or Redis server is reported as `status: unreachable`, which is information, not a module failure.
+
+### In code
 
 ```php
-use Aporat\ServerInfo\ModuleRegistry;
+use Aporat\ServerInfo\Facades\ServerInfo;
 
-$registry = app(ModuleRegistry::class);
-$allInfo = $registry->all();
+ServerInfo::all();          // ['php' => ['version' => '8.4.26', ...], ...]; rethrows a module's exception
+ServerInfo::flat();         // ['php.version' => '8.4.26', ...]; rethrows a module's exception
+$report = ServerInfo::collect();         // never throws for a failing module
+$report = ServerInfo::collect('disk');   // only the disk module
 
-// Returns an array like:
-// [
-//     'php.version' => '8.4.0',
-//     'php.sapi' => 'cli',
-//     'laravel.version' => '12.0.0',
-//     ...
-// ]
+$report->data();      // info of the modules that succeeded
+$report->errors();    // ['broken' => Throwable]
+$report->hasErrors();
+$report->toArray();   // nested, failed modules as ['error' => '...']
+$report->flat();      // flat, failed modules as 'module.error'
 ```
+
+`ServerInfo` is a facade for `Aporat\ServerInfo\ModuleRegistry`, which you can also inject.
+
+## Built-in modules
+
+All modules are enabled by default. Each one only reads local state or opens one short, time-limited connection, and never prints credentials, hosts, DSNs, URLs or environment variable values.
+
+| Module | Name | Reports |
+| --- | --- | --- |
+| `PhpModule` | `php` | version, SAPI, `memory_limit`, `max_execution_time`, `upload_max_filesize`, `post_max_size`, default timezone, OPcache (`enabled`, `memory_used`, `memory_free`, `jit`), sorted extension list |
+| `LaravelModule` | `laravel` | framework version, environment, `debug` (boolean), app name, timezone, locale, `maintenance_mode`, `config_cached`, `routes_cached`, `events_cached` |
+| `SystemModule` | `system` | OS, OS family, kernel release, machine type, hostname, CPU count, load average, uptime, container runtime, cgroup memory limit |
+| `DiskModule` | `disk` | for each path (storage and base by default): `path`, `total`, `free`, `used`, `used_percent`, and the same sizes in bytes (`total_bytes`, `free_bytes`, `used_bytes`) |
+| `DriversModule` | `drivers` | default cache store, queue connection, session driver, mailer, filesystem disk, broadcaster, log channel and database connection names |
+| `DatabaseModule` | `database` | for each probed connection: `driver`, `status` (`ok` / `unreachable` / `not configured`), server `version`, and a redacted `error` |
+| `RedisModule` | `redis` | client (`phpredis` / `predis`), and for each probed connection `status`, server `version` and `mode` (standalone, cluster, sentinel), or a redacted `error` |
+| `PackagesModule` | `packages` | root package name, version and commit, and the installed version of each configured package (`not installed` if absent) |
+
+Notes:
+
+- **SystemModule** reads `/proc/cpuinfo`, `/proc/uptime`, `/proc/1/cgroup` and `/sys/fs/cgroup` directly and never runs shell commands. Values that cannot be read (for example on macOS or Windows) are `null`. The container runtime is `docker` (`/.dockerenv`), `podman` (`/run/.containerenv`), `kubernetes` (the `KUBERNETES_SERVICE_HOST` variable exists; its value is not read), a runtime found in `/proc/1/cgroup`, or `none`. The memory limit is the cgroup v2 `memory.max` or cgroup v1 `memory.limit_in_bytes`, `unlimited` when there is none, and `null` when no cgroup memory controller is visible.
+- **DatabaseModule** probes only the default connection unless configured. Each probe opens a separate connection (the application's own connections are untouched) with a 2-second `PDO::ATTR_TIMEOUT`, reads `PDO::ATTR_SERVER_VERSION` and disconnects. Errors are reduced to the exception class and SQLSTATE/driver code (`PDOException [2002]`); exception messages, which can contain hosts and usernames, are never printed. Requires `illuminate/database` (part of `laravel/framework`).
+- **RedisModule** only connects when asked to or when it matters: by default it probes the `default` Redis connection only if the default cache store, queue connection, session driver or broadcaster uses Redis, and otherwise reports `status: not in use`. Probes use their own short-lived client with a 2-second connect and read timeout and run `INFO server`. If the configured client is missing (no `redis` extension for phpredis, no `predis/predis` for predis) it reports `status: unavailable` with the reason. Errors are redacted like the database module's.
+- **DiskModule** prints paths, not their contents. A path that cannot be measured is reported as `status: unavailable`.
+- In the default view, paths under the application's base path are shown relative to it (Laravel's console components do this); `--flat` and `--json` show full paths.
 
 ## Configuration
 
-After publishing the configuration file, you can customize which modules are loaded in `config/server-info.php`:
+`config/server-info.php`:
 
 ```php
-<?php
-
 return [
+    // Class names only, in display order.
     'modules' => [
-        Aporat\ServerInfo\Modules\PhpModule::class,
-        Aporat\ServerInfo\Modules\LaravelModule::class,
-
-        // Add your custom modules here
-        // App\ServerInfo\CustomModule::class,
+        PhpModule::class,
+        LaravelModule::class,
+        SystemModule::class,
+        DiskModule::class,
+        DriversModule::class,
+        DatabaseModule::class,
+        RedisModule::class,
+        PackagesModule::class,
     ],
+
+    // label => path; null = ['storage' => storage_path(), 'base' => base_path()]
+    'disk' => ['paths' => null],
+
+    // connection names from config/database.php; null = only the default connection
+    'database' => ['connections' => null, 'timeout' => 2],
+
+    // Redis connection names; null = "default", only if cache/queue/session/broadcast use Redis
+    'redis' => ['connections' => null, 'timeout' => 2],
+
+    // packages whose installed version is reported, besides the root package
+    'packages' => ['laravel/framework'],
 ];
 ```
 
-Modules are resolved through the service container, so their constructor dependencies are injected. Nothing is constructed while the application boots; modules are built only when `server:info` runs or the registry is queried.
+Remove a module from `modules` to disable it, for example `DatabaseModule` if you do not want `server:info` to open database connections.
 
-List **class names**. Closures in this file still work, but they make the configuration impossible to cache: `php artisan config:cache` fails with "Your configuration files could not be serialized". To build a module in code, register it from a service provider instead (see below).
+Only class names are accepted in `modules`, so the file can always be cached with `php artisan config:cache`. Modules are resolved through the service container (constructor dependencies are injected) and only when `server:info` runs or the registry is queried, never while the application boots.
 
-An entry that is not a module (a missing class, a class that does not implement `ModuleInterface`, a closure that returns something else) throws an `InvalidArgumentException` naming the entry. Strings are only ever treated as class names; function names and `Class::method` strings are not called.
+## Writing a module
 
-## Built-in Modules
-
-### PhpModule
-
-Provides PHP runtime information:
-- `php.version` - PHP version string
-- `php.sapi` - Server API (cli, fpm, apache, etc.)
-- `php.os` - Operating system
-- `php.extensions` - Array of loaded PHP extensions
-
-### LaravelModule
-
-Provides Laravel application information:
-- `laravel.version` - Laravel framework version
-- `laravel.env` - Application environment (local, production, etc.)
-- `laravel.debug` - Debug mode status
-- `laravel.name` - Application name from config
-- `laravel.timezone` - Application timezone
-
-## Creating Custom Modules
-
-You can create your own modules to report custom information. Here's how:
-
-### 1. Create a Module Class
+A module implements `Aporat\ServerInfo\Contracts\ModuleInterface`:
 
 ```php
-<?php
+interface ModuleInterface
+{
+    /** Unique, non-empty, without dots. */
+    public function name(): string;
 
+    /** @return array<string, scalar|null|array<mixed>> */
+    public function info(): array;
+}
+```
+
+`info()` returns key/value pairs. A value is a scalar, `null`, a list (printed comma-separated, or as JSON in `--flat`), or an associative array (a nested group, flattened with dots in `--flat`).
+
+```php
 namespace App\ServerInfo;
 
 use Aporat\ServerInfo\Contracts\ModuleInterface;
-use Illuminate\Support\Facades\DB;
+use Illuminate\Contracts\Queue\Factory as Queue;
 
-class DatabaseModule implements ModuleInterface
+class QueueModule implements ModuleInterface
 {
+    public function __construct(private Queue $queue) {}
+
     public function name(): string
     {
-        return 'database';
+        return 'queue';
     }
 
-    public function info(): mixed
+    public function info(): array
     {
         return [
-            'driver' => config('database.default'),
-            'connection' => DB::connection()->getName(),
-            'version' => DB::select('SELECT VERSION() as version')[0]->version ?? 'unknown',
+            'default_size' => $this->queue->connection()->size(),
+            'workers' => ['high' => 4, 'low' => 1],
         ];
     }
 }
 ```
 
-### 2. Register Your Module
+Do not return secrets: `server:info` output ends up in terminals, CI logs and support tickets.
 
-Either add your module to `config/server-info.php`:
+### Registering a module
+
+Pick one:
 
 ```php
+// 1. config/server-info.php
 'modules' => [
-    Aporat\ServerInfo\Modules\PhpModule::class,
-    Aporat\ServerInfo\Modules\LaravelModule::class,
-    App\ServerInfo\DatabaseModule::class,
+    // ...
+    App\ServerInfo\QueueModule::class,
 ],
 ```
 
-Or register it from a service provider. This keeps `config:cache` working and still builds the module lazily:
+```php
+// 2. From a service provider's boot() method. Nothing is built until server info is requested.
+use Aporat\ServerInfo\Facades\ServerInfo;
+
+ServerInfo::extend(\App\ServerInfo\QueueModule::class);
+```
 
 ```php
-use Aporat\ServerInfo\ModuleRegistry;
-
-public function boot(): void
-{
-    $this->callAfterResolving(ModuleRegistry::class, function (ModuleRegistry $registry) {
-        $registry->extend(\App\ServerInfo\DatabaseModule::class);
-
-        // or build it yourself; the closure runs only when info is requested
-        $registry->extend(fn () => new \App\ServerInfo\DatabaseModule());
-    });
-}
+// 3. With a container tag, handy for packages. Bind the class first if it needs custom construction.
+$this->app->tag([\App\ServerInfo\QueueModule::class], 'server-info.modules');
 ```
 
-### 3. Use Your Module
+Modules are listed in this order: config, tagged, `extend()`, then instances passed to `ModuleRegistry::register()`. Module names must be non-empty, must not contain a dot, and must be unique.
 
-```bash
-php artisan server:info database
-```
+## Upgrade guide
 
-**Output:**
-```
-database.driver: mysql
-database.connection: mysql
-database.version: 8.0.32
-```
+The module redesign (v2) contains breaking changes for code written against earlier versions of this package.
 
-### Module Interface
+1. **Closures are no longer allowed in `server-info.modules`.** They made `config:cache` fail. A closure in the config now throws an `InvalidArgumentException` explaining how to migrate. Move closure-built modules to a class, or register them from a service provider:
 
-All modules must implement `Aporat\ServerInfo\Contracts\ModuleInterface`:
+    ```php
+    // Before (config/server-info.php)
+    'modules' => [fn () => new MyModule('x')],
 
-```php
-interface ModuleInterface
-{
-    /**
-     * Returns a unique name for this module.
-     */
-    public function name(): string;
+    // After (AppServiceProvider::register / boot)
+    $this->app->bind(MyModule::class, fn () => new MyModule('x'));
+    ServerInfo::extend(MyModule::class);   // or: $this->app->tag([MyModule::class], 'server-info.modules');
+    ```
 
-    /**
-     * Returns diagnostic info for this module.
-     * Can be a scalar or associative array.
-     */
-    public function info(): mixed;
-}
-```
+2. **`ModuleRegistry::extend()` accepts class names only**, not closures. Bind the class in the container if it needs custom construction (as above).
 
-**Notes:**
-- If `info()` returns an array, each key becomes `{module}.{key}`
-- If `info()` returns a scalar, it becomes `{module}` directly
-- Module names must be non-empty, must not contain a dot, and must be unique; otherwise an `InvalidArgumentException` is thrown
-- Output: `true`/`false`/`null` are printed as such, arrays and `JsonSerializable` objects as JSON, `Stringable` objects via `__toString()`, other objects as `[object ClassName]`. Console markup in values is printed literally.
-- `php artisan server:info <module>` exits with status 1 when no data matches the module
+3. **`ModuleInterface::info()` must return an array.** Change the signature to `public function info(): array` and wrap single values, e.g. `return ['value' => $value];`. Objects are no longer part of the contract; return strings or arrays.
+
+4. **`ModuleRegistry::all()` returns nested data** (`['php' => ['version' => ...]]`) instead of flat `'php.version'` keys. Use `ModuleRegistry::flat()` (or `ServerInfo::flat()`) for the old shape. Both rethrow a failing module's exception; use `collect()` to get a `Report` with failures isolated.
+
+5. **The default command output changed** to a section per module. Use `server:info --flat` for the old `module.key: value` lines. Scripts that parse the output should switch to `--json`.
+
+6. **`server:info <module>` matches module names exactly.** `server:info php.version` no longer works; use `server:info php --flat` and filter, or `--json`.
+
+7. **A module that throws no longer aborts the command.** The error is printed in its place and the command exits with status 1.
+
+8. **Built-in module changes:**
+    - `laravel.debug` is a boolean (`true`/`false`), not the strings `'true'`/`'false'`.
+    - `php.os` moved to `system.os`.
+    - `php.extensions` is sorted.
+    - `LaravelModule` takes its dependencies through the constructor; build it with `app(LaravelModule::class)` instead of `new LaravelModule`.
+
+9. **New default modules.** A config file published from an earlier version lists only `PhpModule` and `LaravelModule`, so add the new modules to your published `config/server-info.php` (or delete it to use the package defaults). `DatabaseModule` opens a short connection to the default database when `server:info` runs; leave it out if you do not want that.
 
 ## Testing
 
-Run the test suite:
-
 ```bash
-composer test
-```
-
-Run code style checks:
-
-```bash
-composer check
-```
-
-Run static analysis:
-
-```bash
-composer analyze
+composer test      # PHPUnit
+composer check     # Pint (code style)
+composer analyze   # PHPStan
 ```
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-### Development Setup
+Contributions are welcome! Please open an issue or a pull request.
 
 1. Clone the repository
 2. Install dependencies: `composer install`
-3. Run tests: `composer test`
-4. Check code style: `composer check`
+3. Run `composer test`, `composer check` and `composer analyze`
 
 ## Security
 
@@ -299,8 +321,3 @@ The MIT License (MIT). Please see [License File](LICENSE) for more information.
 
 - [Adar Porat](https://github.com/aporat)
 - [All Contributors](https://github.com/aporat/laravel-server-info/contributors)
-
-## Support
-
-- [GitHub Issues](https://github.com/aporat/laravel-server-info/issues)
-- [GitHub Repository](https://github.com/aporat/laravel-server-info)

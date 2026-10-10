@@ -2,15 +2,18 @@
 
 namespace Aporat\ServerInfo\Tests;
 
-use Aporat\ServerInfo\Contracts\ModuleInterface;
 use Aporat\ServerInfo\ModuleRegistry;
 use Aporat\ServerInfo\Tests\Fixtures\CountingModule;
 use Aporat\ServerInfo\Tests\Fixtures\NotAModule;
 use Aporat\ServerInfo\Tests\Fixtures\StaticModule;
+use Aporat\ServerInfo\Tests\Fixtures\TaggedModule;
+use Aporat\ServerInfo\Tests\Fixtures\ThrowingModule;
+use Illuminate\Container\Container;
 use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
+use RuntimeException;
 
 require_once __DIR__.'/Fixtures/functions.php';
 
@@ -24,91 +27,123 @@ class ModuleRegistryTest extends TestCase
     }
 
     #[Test]
-    public function it_registers_and_retrieves_a_scalar_module(): void
+    public function all_returns_info_nested_by_module_name(): void
     {
-        $module = new class implements ModuleInterface
-        {
-            public function name(): string
-            {
-                return 'scalar';
-            }
-
-            public function info(): string
-            {
-                return 'value';
-            }
-        };
-
-        $registry = new ModuleRegistry;
-        $registry->register($module);
-
-        $result = $registry->all();
-
-        $this->assertArrayHasKey('scalar', $result);
-        $this->assertEquals('value', $result['scalar']);
-    }
-
-    #[Test]
-    public function it_registers_and_retrieves_an_array_module(): void
-    {
-        $module = new class implements ModuleInterface
-        {
-            public function name(): string
-            {
-                return 'env';
-            }
-
-            public function info(): array
-            {
-                return ['php' => '8.4', 'laravel' => '12.x'];
-            }
-        };
-
-        $registry = new ModuleRegistry;
-        $registry->register($module);
-
-        $result = $registry->all();
-
-        $this->assertArrayHasKey('env.php', $result);
-        $this->assertArrayHasKey('env.laravel', $result);
-        $this->assertEquals('8.4', $result['env.php']);
-        $this->assertEquals('12.x', $result['env.laravel']);
-    }
-
-    #[Test]
-    public function extend_is_lazy_for_class_names_and_closures(): void
-    {
-        $calls = 0;
         $registry = (new ModuleRegistry)
-            ->extend(CountingModule::class)
-            ->extend(function () use (&$calls) {
-                $calls++;
+            ->register(new StaticModule('env', ['php' => '8.4', 'laravel' => '12.x']))
+            ->register(new StaticModule('other', ['group' => ['a' => 1]]));
 
-                return new StaticModule('built');
-            });
+        $this->assertSame([
+            'env' => ['php' => '8.4', 'laravel' => '12.x'],
+            'other' => ['group' => ['a' => 1]],
+        ], $registry->all());
+    }
+
+    #[Test]
+    public function flat_returns_dotted_keys(): void
+    {
+        $registry = (new ModuleRegistry)->register(new StaticModule('env', ['php' => '8.4', 'group' => ['a' => 1]]));
+
+        $this->assertSame(['env.php' => '8.4', 'env.group.a' => 1], $registry->flat());
+    }
+
+    #[Test]
+    public function extend_is_lazy(): void
+    {
+        $registry = (new ModuleRegistry)->extend(CountingModule::class);
 
         $this->assertSame(0, CountingModule::$constructed);
-        $this->assertSame(0, $calls);
 
         $result = $registry->all();
 
         $this->assertSame(1, CountingModule::$constructed);
-        $this->assertSame(1, $calls);
-        $this->assertSame(1, $result['counting.constructed']);
-        $this->assertSame('value', $result['built']);
+        $this->assertSame(['counting' => ['constructed' => 1]], $result);
+    }
+
+    #[Test]
+    public function collect_isolates_module_failures(): void
+    {
+        $registry = (new ModuleRegistry)
+            ->register(new ThrowingModule)
+            ->register(new StaticModule);
+
+        $report = $registry->collect();
+
+        $this->assertTrue($report->hasErrors());
+        $this->assertSame(['static' => ['value' => 'x']], $report->data());
+    }
+
+    #[Test]
+    public function collect_can_be_limited_to_one_module(): void
+    {
+        $registry = (new ModuleRegistry)
+            ->register(new ThrowingModule)
+            ->register(new StaticModule);
+
+        $report = $registry->collect('static');
+
+        $this->assertFalse($report->hasErrors());
+        $this->assertSame(['static' => ['value' => 'x']], $report->entries());
+    }
+
+    #[Test]
+    public function collect_rejects_an_unknown_module(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('No server info module is named "nope".');
+
+        (new ModuleRegistry)->register(new StaticModule)->collect('nope');
+    }
+
+    #[Test]
+    public function all_and_flat_rethrow_module_failures(): void
+    {
+        $registry = (new ModuleRegistry)->register(new ThrowingModule);
+
+        foreach (['all', 'flat'] as $method) {
+            try {
+                $registry->{$method}();
+                $this->fail("$method() should rethrow");
+            } catch (RuntimeException $e) {
+                $this->assertSame('module exploded', $e->getMessage());
+            }
+        }
+    }
+
+    #[Test]
+    public function tagged_modules_are_resolved_from_the_container(): void
+    {
+        $container = new Container;
+        $container->tag([TaggedModule::class], ModuleRegistry::TAG);
+
+        $registry = (new ModuleRegistry($container))->register(new StaticModule);
+
+        $this->assertSame(['tagged', 'static'], array_keys($registry->modules()));
+    }
+
+    #[Test]
+    public function a_tagged_service_that_is_not_a_module_is_rejected(): void
+    {
+        $container = new Container;
+        $container->tag([NotAModule::class], ModuleRegistry::TAG);
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('A service tagged [server-info.modules] resolved to '.NotAModule::class);
+
+        (new ModuleRegistry($container))->modules();
     }
 
     #[Test]
     public function it_rejects_duplicate_module_names(): void
     {
-        $registry = new ModuleRegistry;
-        $registry->register(new StaticModule('php', 'a'));
-        $registry->register(new StaticModule('php', 'b'));
+        $registry = (new ModuleRegistry)
+            ->register(new StaticModule('php'))
+            ->register(new StaticModule('php'));
 
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('Server info module name "php" is used by both');
 
-        $registry->all();
+        $registry->modules();
     }
 
     /**
@@ -126,37 +161,35 @@ class ModuleRegistryTest extends TestCase
     #[DataProvider('invalidNames')]
     public function it_rejects_invalid_module_names(string $name): void
     {
-        $registry = new ModuleRegistry;
-        $registry->register(new StaticModule($name, 'x'));
+        $registry = (new ModuleRegistry)->register(new StaticModule($name));
 
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('names must be non-empty and must not contain a dot');
 
-        $registry->all();
+        $registry->modules();
     }
 
     /**
-     * @return array<string, array{mixed, string}>
+     * @return array<string, array{string, string}>
      */
     public static function invalidEntries(): array
     {
         return [
-            'missing class' => ['App\\ServerInfo\\Typo', 'Server info module class [App\\ServerInfo\\Typo] listed in extend() does not exist.'],
+            'missing class' => ['App\\ServerInfo\\Typo', 'Server info module class [App\\ServerInfo\\Typo] listed in ModuleRegistry::extend() does not exist.'],
             'not a module' => [NotAModule::class, 'does not implement'],
             'global function name' => ['Aporat\\ServerInfo\\Tests\\Fixtures\\sideEffect', 'does not exist'],
             'static method string' => [StaticModule::class.'::make', 'does not exist'],
-            'closure returning junk' => [fn () => 'nope', 'A closure in extend() returned string instead of an implementation of'],
         ];
     }
 
     #[Test]
     #[DataProvider('invalidEntries')]
-    public function it_rejects_invalid_entries_without_calling_them(mixed $entry, string $message): void
+    public function it_rejects_invalid_entries_without_calling_them(string $entry, string $message): void
     {
         $registry = (new ModuleRegistry)->extend($entry);
 
         try {
-            $registry->all();
+            $registry->modules();
             $this->fail('Expected an InvalidArgumentException');
         } catch (InvalidArgumentException $e) {
             $this->assertStringContainsString($message, $e->getMessage());
@@ -170,6 +203,6 @@ class ModuleRegistryTest extends TestCase
     {
         $registry = (new ModuleRegistry)->extend(StaticModule::class);
 
-        $this->assertSame(['static' => 'value'], $registry->all());
+        $this->assertSame(['static' => ['value' => 'x']], $registry->all());
     }
 }
