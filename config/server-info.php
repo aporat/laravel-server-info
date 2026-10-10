@@ -1,5 +1,8 @@
 <?php
 
+use Aporat\ServerInfo\Modules\LaravelModule;
+use Aporat\ServerInfo\Modules\PhpModule;
+
 return [
 
     /*
@@ -7,16 +10,20 @@ return [
     | Server Info Modules
     |--------------------------------------------------------------------------
     |
-    | Define the list of modules to load. Each one must implement
-    | Aporat\ServerInfo\Contracts\ModuleInterface.
+    | Class names of the modules to load. Each one must implement
+    | Aporat\ServerInfo\Contracts\ModuleInterface and is resolved through the
+    | service container (so constructor dependencies are injected) only when
+    | server info is requested.
     |
-    | You can pass closures if you need to inject custom config or dependencies.
+    | Use class names here. Closures also work, but they make the config
+    | impossible to cache (`php artisan config:cache` fails). To build a module
+    | in code, call ModuleRegistry::extend() from a service provider instead.
     |
     */
 
     'modules' => [
-        Aporat\ServerInfo\Modules\PhpModule::class,
-        Aporat\ServerInfo\Modules\LaravelModule::class,
+        PhpModule::class,
+        LaravelModule::class,
     ],
 
 ];

@@ -131,6 +131,12 @@ return [
 ];
 ```
 
+Modules are resolved through the service container, so their constructor dependencies are injected. Nothing is constructed while the application boots; modules are built only when `server:info` runs or the registry is queried.
+
+List **class names**. Closures in this file still work, but they make the configuration impossible to cache: `php artisan config:cache` fails with "Your configuration files could not be serialized". To build a module in code, register it from a service provider instead (see below).
+
+An entry that is not a module (a missing class, a class that does not implement `ModuleInterface`, a closure that returns something else) throws an `InvalidArgumentException` naming the entry. Strings are only ever treated as class names; function names and `Class::method` strings are not called.
+
 ## Built-in Modules
 
 ### PhpModule
@@ -162,6 +168,7 @@ You can create your own modules to report custom information. Here's how:
 namespace App\ServerInfo;
 
 use Aporat\ServerInfo\Contracts\ModuleInterface;
+use Illuminate\Support\Facades\DB;
 
 class DatabaseModule implements ModuleInterface
 {
@@ -183,7 +190,7 @@ class DatabaseModule implements ModuleInterface
 
 ### 2. Register Your Module
 
-Add your module to `config/server-info.php`:
+Either add your module to `config/server-info.php`:
 
 ```php
 'modules' => [
@@ -191,6 +198,22 @@ Add your module to `config/server-info.php`:
     Aporat\ServerInfo\Modules\LaravelModule::class,
     App\ServerInfo\DatabaseModule::class,
 ],
+```
+
+Or register it from a service provider. This keeps `config:cache` working and still builds the module lazily:
+
+```php
+use Aporat\ServerInfo\ModuleRegistry;
+
+public function boot(): void
+{
+    $this->callAfterResolving(ModuleRegistry::class, function (ModuleRegistry $registry) {
+        $registry->extend(\App\ServerInfo\DatabaseModule::class);
+
+        // or build it yourself; the closure runs only when info is requested
+        $registry->extend(fn () => new \App\ServerInfo\DatabaseModule());
+    });
+}
 ```
 
 ### 3. Use Your Module
@@ -229,7 +252,9 @@ interface ModuleInterface
 **Notes:**
 - If `info()` returns an array, each key becomes `{module}.{key}`
 - If `info()` returns a scalar, it becomes `{module}` directly
-- Module names should be unique to avoid conflicts
+- Module names must be non-empty, must not contain a dot, and must be unique; otherwise an `InvalidArgumentException` is thrown
+- Output: `true`/`false`/`null` are printed as such, arrays and `JsonSerializable` objects as JSON, `Stringable` objects via `__toString()`, other objects as `[object ClassName]`. Console markup in values is printed literally.
+- `php artisan server:info <module>` exits with status 1 when no data matches the module
 
 ## Testing
 
