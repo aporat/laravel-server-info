@@ -14,7 +14,7 @@ class DependentModule implements ModuleInterface
         return 'dependent';
     }
 
-    public function info(): mixed
+    public function info(): array
     {
         return ['app_name' => $this->config->get('app.name')];
     }

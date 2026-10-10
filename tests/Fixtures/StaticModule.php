@@ -9,20 +9,23 @@ use Aporat\ServerInfo\Contracts\ModuleInterface;
  */
 class StaticModule implements ModuleInterface
 {
-    public function __construct(private string $name = 'static', private mixed $info = 'value') {}
+    /**
+     * @param  array<string, mixed>  $info
+     */
+    public function __construct(private string $name = 'static', private array $info = ['value' => 'x']) {}
 
     public function name(): string
     {
         return $this->name;
     }
 
-    public function info(): mixed
+    public function info(): array
     {
         return $this->info;
     }
 
     /**
-     * Global-function-style and static-method-style entries that must never be called.
+     * Static-method-style entry that must never be called.
      */
     public static function make(): self
     {

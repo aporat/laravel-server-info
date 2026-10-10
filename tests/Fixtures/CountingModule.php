@@ -18,7 +18,7 @@ class CountingModule implements ModuleInterface
         return 'counting';
     }
 
-    public function info(): mixed
+    public function info(): array
     {
         return ['constructed' => self::$constructed];
     }
